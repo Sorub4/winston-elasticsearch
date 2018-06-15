@@ -1,11 +1,11 @@
 /*eslint-disable */
-var util = require('util');
 var fs = require('fs');
 var should = require('should');
 var winston = require('winston');
-//var elasticsearch = require('elasticsearch');
+var sinon = require('sinon');
 
-require('../index');
+var ElasticTransport = require('../index');
+var bulkWriter = require('../bulk_writer');
 var defaultTransformer = require('../transformer');
 
 var logMessage = JSON.parse(fs.readFileSync('./test/request_logentry_1.json', 'utf8'));
@@ -42,21 +42,22 @@ describe('winston-elasticsearch:', function () {
   });
 
   var logger = null;
+  var elasticLogger = null;
 
   describe('a logger', function () {
     it('can be instantiated', function (done) {
       this.timeout(8000);
       try {
-        logger = new (winston.Logger)({
+        const winstonOptions = {
           transports: [
-            new (winston.transports.Elasticsearch)({
-              flushInterval: 10,
-              clientOpts: {
-                log: NullLogger,
-              }
-            })
-          ]
-        });
+            new winston.transports.Console({
+              level: 'ALL',
+              timestamp: () => { return moment().format('LTS'); }
+            })]
+        }
+        elasticClient = new ElasticTransport(NullLogger);
+        winstonOptions.transports.push(elasticClient);
+        logger = winston.createLogger(winstonOptions);
         done();
       } catch (err) {
         console.log('---->', err);
@@ -66,28 +67,23 @@ describe('winston-elasticsearch:', function () {
 
     it('should log to Elasticsearch', function (done) {
       this.timeout(8000);
-      logger.log(logMessage.level, logMessage.message, logMessage.meta,
-        function (err) {
-          should.not.exist(err);
-          // Wait to make sure data is already written.
-          setTimeout(function () {
-            done();
-          }, 6500);
-        });
+      var spy = sinon.spy(bulkWriter.prototype, 'append');
+      logger.info(logMessage.message, logMessage.meta);
+      (spy.calledOnce).should.be.true();
+
+      setTimeout(function () {
+        done();
+      }, 6500);
     });
 
     describe('the logged message', function () {
-      it('should be found in the index', function (done) {
-        logger.transports.elasticsearch.search(`message:${logMessage.message}`).then(
-          (res) => {
-            res.hits.total.should.be.above(0);
-            done();
-          },
-          (err) => {
-            should.not.exist(err);
-          }).catch((e) => {
-            // prevent '[DEP0018] DeprecationWarning: Unhandled promise rejections are deprecated'
-          });
+      it('should be found in the bulkWriter', function (done) {
+        const results = logger.transports[1].bulkWriter.bulk.filter((obj) => {
+          return obj.message === `${logMessage.message}`
+        });
+
+        results.length.should.be.above(0);
+        done();
       });
     });
   });
